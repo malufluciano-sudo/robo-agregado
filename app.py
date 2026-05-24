@@ -1,21 +1,27 @@
 # ============================================================
-#  ROBÔ AGREGADO v1.6c — Cloud Edition
-#  Versão otimizada para Streamlit Cloud
+#  ROBÔ AGREGADO v1.6d — Cloud Edition
+#  Versão com diagnóstico de erro para Streamlit Cloud
 # ============================================================
 
 import streamlit as st
-import pandas as pd
-import numpy as np
-import plotly.graph_objects as go
-from plotly.subplots import make_subplots
-from datetime import datetime, timezone, timedelta
-import requests
 
+# set_page_config DEVE ser o primeiro comando Streamlit
 st.set_page_config(
     page_title="Robô Agregado | Luciano",
     page_icon="🦈", layout="wide",
     initial_sidebar_state="expanded",
 )
+
+try:
+    import pandas as pd
+    import numpy as np
+    import plotly.graph_objects as go
+    from plotly.subplots import make_subplots
+    from datetime import datetime, timezone, timedelta
+    import requests
+except Exception as _import_err:
+    st.error(f"Erro ao importar biblioteca: {_import_err}")
+    st.stop()
 
 st.markdown("""
 <style>
