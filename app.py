@@ -126,8 +126,8 @@ st.markdown(f"""
 """, unsafe_allow_html=True)
 
 
-# ─── ANÁLISE ─────────────────────────────────────────────────
-if analisar or (st.session_state["symbol_analisado"] != symbol and symbol):
+# ─── ANÁLISE — só executa quando botão clicado ───────────────
+if analisar:
     with st.spinner(f"⚡ Analisando {symbol} — Metodologia Agregada..."):
         res = analisar_ativo_completo(symbol)
         res["margem_cfg"] = margem_cfg
@@ -136,9 +136,16 @@ if analisar or (st.session_state["symbol_analisado"] != symbol and symbol):
 
 res = st.session_state.get("analise_resultado")
 if res is None:
-    st.markdown("""<div style="text-align:center;padding:80px;color:#4a5568">
-    <div style="font-size:48px;margin-bottom:16px">📊</div>
-    <div style="font-size:18px;color:#94a3b8">Selecione um ativo e clique em ANALISAR</div>
+    st.markdown("""
+    <div style="text-align:center;padding:80px;color:#4a5568">
+        <div style="font-size:64px;margin-bottom:20px">🦈</div>
+        <div style="font-size:20px;font-weight:700;color:#00d4aa;margin-bottom:8px">ROBÔ AGREGADO</div>
+        <div style="font-size:14px;color:#94a3b8;margin-bottom:24px">
+            Digite um ativo na barra lateral e clique em ANALISAR
+        </div>
+        <div style="font-size:12px;color:#4a5568">
+            BTCUSDT · ETHUSDT · SOLUSDT · HYPEUSDT · XAGUSD
+        </div>
     </div>""", unsafe_allow_html=True)
     st.stop()
 if res.get("erro"): st.error(f"⚠️ {res['erro']}"); st.stop()
