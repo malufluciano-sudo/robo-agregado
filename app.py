@@ -324,20 +324,37 @@ def build_chart_tv(symbol, timeframe, analise, height=600):
         vertical_spacing=0.01,
     )
 
-    # ── Candlestick com cores por volume ─────────────────────
-    # Plotar grupo por grupo de cor para manter cores individuais
-    for i in range(len(df)):
-        cor = cores_candle[i]
-        row = df.iloc[i]
-        fig.add_trace(go.Candlestick(
-            x=[df.index[i]],
-            open=[row["open"]], high=[row["high"]],
-            low=[row["low"]],   close=[row["close"]],
-            increasing_line_color=cor, decreasing_line_color=cor,
-            increasing_fillcolor=cor,  decreasing_fillcolor=cor,
-            showlegend=False, name="",
-            whiskerwidth=0.4,
-        ), row=1, col=1)
+    # ── Candlestick único com cor baseada em volume ──────────
+    # Usamos um candlestick padrão + scatter de marcadores coloridos
+    # para indicar o nível de volume sem sobrecarregar a memória
+    fig.add_trace(go.Candlestick(
+        x=df.index, open=df["open"], high=df["high"],
+        low=df["low"], close=df["close"],
+        increasing_line_color="#00d4aa", decreasing_line_color="#ff4444",
+        increasing_fillcolor="#00d4aa",  decreasing_fillcolor="#ff4444",
+        showlegend=False, name="OHLC",
+        whiskerwidth=0.4,
+    ), row=1, col=1)
+
+    # Marcadores de volume alto (spike/alto) sobre os candles
+    vol_media = df["volume"].rolling(20, min_periods=1).mean()
+    ratio_vol = df["volume"] / vol_media.replace(0, 1)
+
+    for nivel, cor_m, min_r in [
+        ("SPIKE", "#f5c518", 2.0),
+        ("ALTO",  "#ff8c00", 1.5),
+    ]:
+        mask = ratio_vol >= min_r
+        if mask.any():
+            df_m = df[mask]
+            fig.add_trace(go.Scatter(
+                x=df_m.index,
+                y=df_m["high"] * 1.001,
+                mode="markers",
+                marker=dict(symbol="triangle-down", color=cor_m, size=6),
+                name=nivel, showlegend=False,
+                hovertemplate=f"{nivel}: %{{x}}<extra></extra>",
+            ), row=1, col=1)
 
     # ── VWAP Ancorado ────────────────────────────────────────
     if not vwap_serie.empty:
