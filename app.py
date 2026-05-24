@@ -1,3 +1,4 @@
+# -*- coding: utf-8 -*-
 # ============================================================
 #  ROBÔ AGREGADO v1.6d — Cloud Edition
 #  Versão com diagnóstico de erro para Streamlit Cloud
@@ -8,7 +9,7 @@ import streamlit as st
 # set_page_config DEVE ser o primeiro comando Streamlit
 st.set_page_config(
     page_title="Robô Agregado | Luciano",
-    page_icon="🦈", layout="wide",
+    page_icon="📊", layout="wide",
     initial_sidebar_state="expanded",
 )
 
