@@ -207,41 +207,52 @@ c5.markdown(f"""<div class="metric-card metric-card-{st2}">
 # ════════════════════════════════════════════════════════════
 def colorir_candles_por_volume(df: pd.DataFrame) -> list:
     """
-    Regra do indicador NoobSharks (Luciano):
-    Volume > 2.0x média  = SPIKE
-    Volume > 1.5x média  = ALTO
-    Volume > 1.0x média  = MÉDIO
-    Volume <= 1.0x média = BAIXO
+    Coloração IDÊNTICA ao Pine Script [LucShark] v5.1:
+    Usa Z-Score com EMA 55 períodos (igual ao indicador original).
 
-    Candle de alta:
-      SPIKE → amarelo   (#f5c518)
-      ALTO  → laranja   (#ff8c00)
-      MÉDIO → verde     (#00d4aa)
-      BAIXO → azul claro (#4a9eff)  ← fraco / não entrar
-
-    Candle de baixa:
-      SPIKE → roxo      (#9b59b6)
-      ALTO  → vermelho  (#ff2244)
-      MÉDIO → laranja   (#ff6600)
-      BAIXO → branco/cinza (#aaaaaa) ← fraco / não entrar
+    Z > 4.0 + ALTA  = vermelho     rgb(255,50,50)
+    Z > 4.0 + BAIXA = roxo         rgb(180,0,255)
+    Z > 2.5 + ALTA  = laranja      rgb(255,140,0)
+    Z > 2.5 + BAIXA = rosa         rgb(255,80,200)
+    Z > 1.0         = amarelo      rgb(255,215,0)
+    Z > -0.5        = branco       rgb(220,220,220)
+    resto           = azul         rgb(100,149,237)
     """
-    vol_media = df["volume"].rolling(20, min_periods=1).mean()
+    length = 55
+    vol = df["volume"].astype(float)
+
+    # EMA do volume (igual ao Pine: useEMA=true, length=55)
+    ema_vol = vol.ewm(span=length, adjust=False).mean()
+
+    # Desvio padrão rolling (igual ao Pine: ta.stdev)
+    std_vol = vol.rolling(length, min_periods=2).std()
+
+    # Z-Score
+    z = (vol - ema_vol) / std_vol.replace(0, np.nan)
+    z = z.fillna(0)
+
+    # Thresholds do Pine Script (valores padrão)
+    THR_EXTRA_HIGH = 4.0
+    THR_HIGH       = 2.5
+    THR_MEDIUM     = 1.0
+    THR_NORMAL     = -0.5
+
     cores = []
     for i in range(len(df)):
-        v    = df["volume"].iloc[i]
-        vm   = vol_media.iloc[i]
+        zi   = z.iloc[i]
         alta = df["close"].iloc[i] >= df["open"].iloc[i]
-        ratio = v / vm if vm > 0 else 1.0
-        if alta:
-            if ratio >= 2.0:   cores.append("#f5c518")   # spike alta = amarelo
-            elif ratio >= 1.5: cores.append("#ff8c00")   # alto alta  = laranja
-            elif ratio >= 1.0: cores.append("#00d4aa")   # médio alta = verde
-            else:              cores.append("#4a9eff")   # baixo alta = azul (fraco)
+
+        if zi > THR_EXTRA_HIGH:
+            cor = "#ff3232" if alta else "#b400ff"   # vermelho / roxo
+        elif zi > THR_HIGH:
+            cor = "#ff8c00" if alta else "#ff50c8"   # laranja  / rosa
+        elif zi > THR_MEDIUM:
+            cor = "#ffd700"                          # amarelo (qualquer direção)
+        elif zi > THR_NORMAL:
+            cor = "#dcdcdc"                          # branco
         else:
-            if ratio >= 2.0:   cores.append("#9b59b6")   # spike baixa = roxo
-            elif ratio >= 1.5: cores.append("#ff2244")   # alto baixa  = vermelho
-            elif ratio >= 1.0: cores.append("#ff6600")   # médio baixa = laranja
-            else:              cores.append("#aaaaaa")   # baixo baixa = cinza (fraco)
+            cor = "#6495ed"                          # azul cornflower
+        cores.append(cor)
     return cores
 
 
@@ -291,129 +302,222 @@ def identificar_ancora_metodologia(df: pd.DataFrame, wyckoff: dict) -> int:
 
 
 # ════════════════════════════════════════════════════════════
+#  FUNÇÃO: IDENTIFICAR ÂNCORAS POR CANDLE COLOR
+# ════════════════════════════════════════════════════════════
+def identificar_ancoras_candle_color(df: pd.DataFrame, cores: list, wyckoff: dict) -> dict:
+    """
+    Identifica âncoras para VWAP de topo, VWAP de fundo e VP
+    usando a coloração dos candles (regra Pine Script):
+
+    VWAP de TOPO: candle de SPIKE/ALTO de BAIXA (roxo/vermelho)
+                  no topo do range = smart money distribuindo
+    VWAP de FUNDO: candle de SPIKE/ALTO de ALTA (amarelo/laranja)
+                   no fundo do range = smart money acumulando
+    VP: ancora no início do range identificado pelo Wyckoff
+    """
+    range_low  = wyckoff.get("range_low",  0)
+    range_high = wyckoff.get("range_high", 0)
+
+    if range_low == 0 or range_high == 0 or len(df) < 10:
+        # Sem range definido: usa candles de maior volume
+        vol_media = df["volume"].rolling(20, min_periods=1).mean()
+        ratio = df["volume"] / vol_media.replace(0, 1)
+        range_low  = df["low"].quantile(0.2)
+        range_high = df["high"].quantile(0.8)
+
+    range_mid  = (range_low + range_high) / 2
+    range_amp  = range_high - range_low
+
+    # Cores de spike/alto de BAIXA (topo) = roxo ou rosa (Pine Script)
+    cores_topo  = {"#b400ff", "#ff50c8"}
+    # Cores de spike/alto de ALTA (fundo) = vermelho extra alto ou laranja (Pine Script)
+    # Vermelho = extra alto ALTA, laranja = alto ALTA
+    cores_fundo = {"#ff3232", "#ff8c00"}
+
+    ancora_topo_idx  = None
+    ancora_fundo_idx = None
+    melhor_topo_vol  = 0
+    melhor_fundo_vol = 0
+
+    for i, (cor, row) in enumerate(zip(cores, df.itertuples())):
+        preco_medio = (row.high + row.low) / 2
+        vol = row.volume
+
+        # Candle de topo: cor de baixa spike/alto E preço na metade superior do range
+        if cor in cores_topo and preco_medio > range_mid and vol > melhor_topo_vol:
+            ancora_topo_idx = i
+            melhor_topo_vol = vol
+
+        # Candle de fundo: cor de alta spike/alto E preço na metade inferior do range
+        if cor in cores_fundo and preco_medio < range_mid and vol > melhor_fundo_vol:
+            ancora_fundo_idx = i
+            melhor_fundo_vol = vol
+
+    # Fallback: se não achou pelo critério de range, usa extremos de volume
+    if ancora_topo_idx is None:
+        df_topo = df[df["close"] > range_mid]
+        if not df_topo.empty:
+            ancora_topo_idx = df.index.get_loc(df_topo["volume"].idxmax())
+
+    if ancora_fundo_idx is None:
+        df_fundo = df[df["close"] < range_mid]
+        if not df_fundo.empty:
+            ancora_fundo_idx = df.index.get_loc(df_fundo["volume"].idxmax())
+
+    # Âncora do VP: início do range (primeiro candle dentro do range)
+    ancora_vp_idx = 0
+    for i in range(len(df)-1, max(0, len(df)-80), -1):
+        preco = df["close"].iloc[i]
+        if preco < range_low * 0.99 or preco > range_high * 1.01:
+            ancora_vp_idx = min(i + 1, len(df)-1)
+            break
+
+    return {
+        "topo":  ancora_topo_idx  if ancora_topo_idx  is not None else len(df)//3,
+        "fundo": ancora_fundo_idx if ancora_fundo_idx is not None else len(df)//2,
+        "vp":    ancora_vp_idx,
+    }
+
+
+# ════════════════════════════════════════════════════════════
 #  FUNÇÃO: GRÁFICO PRINCIPAL (estilo TradingView)
 # ════════════════════════════════════════════════════════════
 def build_chart_tv(symbol, timeframe, analise, height=600):
-    df = buscar_ohlcv(symbol, timeframe, 150)
+    df = buscar_ohlcv(symbol, timeframe, 200)
     if df.empty:
         fig = go.Figure()
         fig.update_layout(paper_bgcolor="#0e1117", plot_bgcolor="#0e1117", height=height)
         return fig
 
-    dados_a  = analise.get("dados", {})
-    wyck_1h  = dados_a.get("wyckoff", {}).get("1h", {})
-
-    # ── Âncora automática (Metodologia Agregada) ─────────────
-    ancora_idx = identificar_ancora_metodologia(df, wyck_1h)
-    ancora_ts  = df.index[ancora_idx]
-
-    # ── VWAP Ancorado no ponto metodológico ──────────────────
-    vwap_serie = calcular_vwap_ancorado(df, ancora_idx)
-
-    # ── Volume Profile Ancorado no range ─────────────────────
-    df_range = df.iloc[ancora_idx:]
-    vp = calcular_volume_profile(df_range, bins=35)
+    dados_a = analise.get("dados", {})
+    wyck_1h = dados_a.get("wyckoff", {}).get("1h", {})
 
     # ── Cores dos candles por volume (regra Pine Script) ─────
     cores_candle = colorir_candles_por_volume(df)
 
-    # ── Subplots: candle (grande) + volume colorido ───────────
+    # ── Âncoras metodológicas via Candle Color ────────────────
+    ancoras = identificar_ancoras_candle_color(df, cores_candle, wyck_1h)
+    idx_topo  = ancoras["topo"]
+    idx_fundo = ancoras["fundo"]
+    idx_vp    = ancoras["vp"]
+
+    # ── VWAP de Topo (spike de baixa no topo do range) ────────
+    vwap_topo  = calcular_vwap_ancorado(df, idx_topo)
+    # ── VWAP de Fundo (spike de alta no fundo do range) ───────
+    vwap_fundo = calcular_vwap_ancorado(df, idx_fundo)
+
+    # ── Volume Profile ancorado no início do range ────────────
+    df_vp = df.iloc[idx_vp:]
+    vp    = calcular_volume_profile(df_vp, bins=30)
+
+    # ── Subplots: candle + volume ─────────────────────────────
     fig = make_subplots(
         rows=2, cols=1, shared_xaxes=True,
         row_heights=[0.80, 0.20],
         vertical_spacing=0.01,
     )
 
-    # ── Candlestick único com cor baseada em volume ──────────
-    # Usamos um candlestick padrão + scatter de marcadores coloridos
-    # para indicar o nível de volume sem sobrecarregar a memória
-    fig.add_trace(go.Candlestick(
-        x=df.index, open=df["open"], high=df["high"],
-        low=df["low"], close=df["close"],
-        increasing_line_color="#00d4aa", decreasing_line_color="#ff4444",
-        increasing_fillcolor="#00d4aa",  decreasing_fillcolor="#ff4444",
-        showlegend=False, name="OHLC",
-        whiskerwidth=0.4,
-    ), row=1, col=1)
+    # ── Candlestick com cores por volume ─────────────────────
+    # Agrupamos por cor para minimizar traces
+    grupos_cor = {}
+    for i, cor in enumerate(cores_candle):
+        if cor not in grupos_cor:
+            grupos_cor[cor] = []
+        grupos_cor[cor].append(i)
 
-    # Marcadores de volume alto (spike/alto) sobre os candles
-    vol_media = df["volume"].rolling(20, min_periods=1).mean()
-    ratio_vol = df["volume"] / vol_media.replace(0, 1)
-
-    for nivel, cor_m, min_r in [
-        ("SPIKE", "#f5c518", 2.0),
-        ("ALTO",  "#ff8c00", 1.5),
-    ]:
-        mask = ratio_vol >= min_r
-        if mask.any():
-            df_m = df[mask]
-            fig.add_trace(go.Scatter(
-                x=df_m.index,
-                y=df_m["high"] * 1.001,
-                mode="markers",
-                marker=dict(symbol="triangle-down", color=cor_m, size=6),
-                name=nivel, showlegend=False,
-                hovertemplate=f"{nivel}: %{{x}}<extra></extra>",
-            ), row=1, col=1)
-
-    # ── VWAP Ancorado ────────────────────────────────────────
-    if not vwap_serie.empty:
-        fig.add_trace(go.Scatter(
-            x=vwap_serie.index, y=vwap_serie.values,
-            mode="lines", name=f"VWAP (âncora: {ancora_ts.strftime('%d/%m %H:%M') if hasattr(ancora_ts,'strftime') else ''})",
-            line=dict(color="#c084fc", width=2),
-            hovertemplate="VWAP: $%{y:,.4f}<extra></extra>",
+    for cor, indices in grupos_cor.items():
+        sub = df.iloc[indices]
+        alta = sub["close"] >= sub["open"]
+        fig.add_trace(go.Candlestick(
+            x=sub.index,
+            open=sub["open"], high=sub["high"],
+            low=sub["low"],   close=sub["close"],
+            increasing_line_color=cor, decreasing_line_color=cor,
+            increasing_fillcolor=cor,  decreasing_fillcolor=cor,
+            showlegend=False, name="",
+            whiskerwidth=0.4,
         ), row=1, col=1)
 
-        # Marker do ponto de âncora
+    # ── VWAP de TOPO (roxo escuro) ────────────────────────────
+    if not vwap_topo.empty and idx_topo < len(df):
+        ts_topo = df.index[idx_topo]
         fig.add_trace(go.Scatter(
-            x=[ancora_ts], y=[df["low"].iloc[ancora_idx] * 0.998],
-            mode="markers+text",
-            marker=dict(symbol="triangle-up", color="#c084fc", size=10),
-            text=["⚓"], textposition="bottom center",
-            textfont=dict(size=10, color="#c084fc"),
-            name="Âncora VWAP", showlegend=False,
-            hovertemplate=f"Âncora VWAP<extra></extra>",
+            x=vwap_topo.index, y=vwap_topo.values,
+            mode="lines", name="VWAP Topo",
+            line=dict(color="#e040fb", width=1.8, dash="dot"),
+            hovertemplate="VWAP Topo: $%{y:,.4f}<extra></extra>",
+        ), row=1, col=1)
+        fig.add_annotation(
+            x=vwap_topo.index[-1], y=vwap_topo.values[-1],
+            text="VWAP↓", showarrow=False,
+            font=dict(size=9, color="#e040fb"),
+            xanchor="left", row=1, col=1,
+        )
+        # Marcador de âncora
+        fig.add_trace(go.Scatter(
+            x=[ts_topo], y=[df["high"].iloc[idx_topo] * 1.002],
+            mode="markers", marker=dict(symbol="triangle-down", color="#e040fb", size=8),
+            showlegend=False, hovertemplate="Âncora VWAP Topo<extra></extra>",
         ), row=1, col=1)
 
-    # ── Volume Profile — barras horizontais sobre o gráfico ──
-    if vp and "faixas" in vp and "volumes" in vp:
+    # ── VWAP de FUNDO (verde) ────────────────────────────────
+    if not vwap_fundo.empty and idx_fundo < len(df):
+        ts_fundo = df.index[idx_fundo]
+        fig.add_trace(go.Scatter(
+            x=vwap_fundo.index, y=vwap_fundo.values,
+            mode="lines", name="VWAP Fundo",
+            line=dict(color="#00e676", width=1.8, dash="dot"),
+            hovertemplate="VWAP Fundo: $%{y:,.4f}<extra></extra>",
+        ), row=1, col=1)
+        fig.add_annotation(
+            x=vwap_fundo.index[-1], y=vwap_fundo.values[-1],
+            text="VWAP↑", showarrow=False,
+            font=dict(size=9, color="#00e676"),
+            xanchor="left", row=1, col=1,
+        )
+        # Marcador de âncora
+        fig.add_trace(go.Scatter(
+            x=[ts_fundo], y=[df["low"].iloc[idx_fundo] * 0.998],
+            mode="markers", marker=dict(symbol="triangle-up", color="#00e676", size=8),
+            showlegend=False, hovertemplate="Âncora VWAP Fundo<extra></extra>",
+        ), row=1, col=1)
+
+    # ── Volume Profile SOBREPOSTO aos candles ────────────────
+    # Barras horizontais que nascem do lado ESQUERDO do range
+    # e se estendem para a direita proporcionalmente ao volume
+    if vp and "faixas" in vp and "volumes" in vp and idx_vp < len(df):
         faixas  = vp["faixas"]
         volumes = vp["volumes"]
         vol_max = max(volumes) if max(volumes) > 0 else 1
 
-        # Largura do VP = 15% da janela temporal (direita do gráfico)
+        # Posição X: o VP começa no início do range e vai até 30% da largura visível
+        x_inicio = df.index[idx_vp]
         try:
-            dt_candle  = df.index[-1] - df.index[-2]
-            x_vp_start = df.index[-1]
-            x_vp_end   = df.index[-1] + dt_candle * 18  # 18 candles de largura máx
+            dt = df.index[-1] - df.index[-2]
+            n_candles_visiveis = len(df) - idx_vp
+            largura_max = dt * int(n_candles_visiveis * 0.30)  # 30% da região do range
+            x_max_vp = x_inicio + largura_max
         except Exception:
-            x_vp_start = x_vp_end = df.index[-1]
+            x_max_vp = df.index[min(idx_vp + 20, len(df)-1)]
 
-        altura_faixa = (max(faixas) - min(faixas)) / max(len(faixas)-1, 1) * 0.85
+        altura_faixa = (max(faixas) - min(faixas)) / max(len(faixas)-1, 1) * 0.9
 
         for i, (f, v) in enumerate(zip(faixas, volumes)):
-            frac = v / vol_max
-            x_end = x_vp_start + (x_vp_end - x_vp_start) * frac
+            frac  = v / vol_max
+            x_fim = x_inicio + (x_max_vp - x_inicio) * frac
 
             is_poc = (i == vp.get("poc_idx", -1))
             in_va  = vp.get("val", 0) <= f <= vp.get("vah", 0)
 
-            if is_poc:
-                cor_vp = "#ffaa00"; opac = 0.95
-            elif in_va:
-                cor_vp = "rgba(0,180,100,0.55)"; opac = 1
-            else:
-                cor_vp = "rgba(60,100,160,0.35)"; opac = 1
+            cor_vp = "#ffaa00" if is_poc else ("rgba(0,200,100,0.4)" if in_va else "rgba(60,100,180,0.25)")
+            opac   = 0.9 if is_poc else 1.0
 
             fig.add_shape(
                 type="rect",
-                x0=x_vp_start, x1=x_end,
+                x0=x_inicio, x1=x_fim,
                 y0=f - altura_faixa/2, y1=f + altura_faixa/2,
-                fillcolor=cor_vp if is_poc else cor_vp,
-                line=dict(width=0),
-                opacity=opac,
-                row=1, col=1,
+                fillcolor=cor_vp, line=dict(width=0),
+                opacity=opac, row=1, col=1,
             )
 
         # Linhas POC / VAH / VAL
@@ -515,10 +619,10 @@ def build_chart_tv(symbol, timeframe, analise, height=600):
 
     # Legenda de cores dos candles (canto superior esquerdo)
     legenda_cores = [
-        ("█ Spike Alta",  "#f5c518"), ("█ Alto Alta",   "#ff8c00"),
-        ("█ Médio Alta",  "#00d4aa"), ("█ Baixo Alta",  "#4a9eff"),
-        ("█ Spike Baixa", "#9b59b6"), ("█ Alto Baixa",  "#ff2244"),
-        ("█ Médio Baixa", "#ff6600"), ("█ Baixo Baixa", "#aaaaaa"),
+        ("█ Extra Alto Alta",  "#ff3232"), ("█ Alto Alta",   "#ff8c00"),
+        ("█ Médio (Amarelo)",  "#ffd700"), ("█ Normal",      "#dcdcdc"),
+        ("█ Extra Alto Baixa", "#b400ff"), ("█ Alto Baixa",  "#ff50c8"),
+        ("█ Azul = fraco",     "#6495ed"),
     ]
     for i, (lbl, cor) in enumerate(legenda_cores):
         fig.add_annotation(
